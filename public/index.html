@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Flash Transfer</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel hero">
+        <p class="eyebrow">LAN FLASH TRANSFER</p>
+        <h1>局域网文件快传</h1>
+        <p class="subcopy">
+          四位码配对，浏览器间点对点传输。文件不经过服务端。
+        </p>
+      </section>
+
+      <section class="panel">
+        <form id="join-form" class="stack">
+          <div class="field-group">
+            <label class="label" for="device-name">设备名</label>
+            <input
+              id="device-name"
+              class="text-input"
+              maxlength="32"
+              placeholder="例如：Aushion-MacBook"
+            />
+          </div>
+
+          <div class="role-picker" id="role-picker">
+            <button type="button" class="role-card active" data-role="sender">
+              发送方
+            </button>
+            <button type="button" class="role-card" data-role="receiver">
+              接收方
+            </button>
+          </div>
+
+          <div class="code-group">
+            <label class="label">输入四位配对码</label>
+            <div class="pin-grid" id="pin-grid">
+              <input class="pin-input" inputmode="numeric" maxlength="1" />
+              <input class="pin-input" inputmode="numeric" maxlength="1" />
+              <input class="pin-input" inputmode="numeric" maxlength="1" />
+              <input class="pin-input" inputmode="numeric" maxlength="1" />
+            </div>
+          </div>
+
+          <button id="join-button" class="primary" type="submit">开始配对</button>
+        </form>
+
+        <div class="status-card">
+          <p class="label">当前状态</p>
+          <p id="status-text">等待输入配对信息</p>
+          <p id="peer-text" class="hint hidden"></p>
+        </div>
+      </section>
+
+      <section class="panel stack">
+        <div id="sender-panel" class="stack hidden">
+          <label class="file-picker">
+            <input id="file-input" type="file" multiple />
+            <span>选择要发送的文件</span>
+          </label>
+          <div id="dropzone" class="dropzone">
+            拖拽文件到这里，或点击上方按钮选择多个文件
+          </div>
+          <div id="file-meta" class="meta hidden"></div>
+          <button id="send-button" class="primary" type="button" disabled>
+            发送文件队列
+          </button>
+        </div>
+
+        <div id="receiver-panel" class="stack hidden">
+          <button id="save-button" class="secondary" type="button" disabled>
+            为当前文件选择保存位置
+          </button>
+          <p class="hint">
+            大文件接收前需手动点按钮选择保存位置；不支持流式保存时仅建议接收小文件。
+          </p>
+        </div>
+
+        <div class="progress-block hidden" id="transfer-panel">
+          <div class="progress-header">
+            <span id="progress-label">等待传输</span>
+            <span id="progress-value">0%</span>
+          </div>
+          <div class="progress-track">
+            <div id="progress-bar" class="progress-bar"></div>
+          </div>
+          <p id="transfer-meta" class="hint">尚未开始</p>
+        </div>
+
+        <div class="actions-row">
+          <button id="rejoin-button" class="secondary" type="button">
+            快速重新配对
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+  </html>

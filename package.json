@@ -1,0 +1,16 @@
+{
+  "name": "flash-transfer",
+  "version": "1.0.0",
+  "description": "LAN flash transfer MVP powered by WebRTC and WebSocket signaling",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.19.0"
+  }
+}

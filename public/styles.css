@@ -1,0 +1,271 @@
+:root {
+  color-scheme: light;
+  --bg: #f3efe6;
+  --panel: rgba(255, 251, 245, 0.9);
+  --line: rgba(31, 36, 33, 0.12);
+  --ink: #17211d;
+  --muted: #58645e;
+  --accent: #0d8f62;
+  --accent-strong: #0b6e4d;
+  --accent-soft: rgba(13, 143, 98, 0.14);
+  --danger: #bf3f32;
+  --shadow: 0 24px 60px rgba(34, 34, 34, 0.12);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(235, 195, 130, 0.65), transparent 30%),
+    linear-gradient(145deg, #f8f3ea 0%, #ece5d8 100%);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+input {
+  min-width: 0;
+}
+
+.shell {
+  width: min(960px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 40px 0 56px;
+  display: grid;
+  gap: 20px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  padding: 28px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(12px);
+}
+
+.hero {
+  padding-bottom: 18px;
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  font-size: 12px;
+  letter-spacing: 0.24em;
+  color: var(--muted);
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(2.2rem, 6vw, 4rem);
+  line-height: 0.95;
+}
+
+.subcopy,
+.hint,
+.label {
+  color: var(--muted);
+}
+
+.subcopy {
+  margin: 14px 0 0;
+  max-width: 36rem;
+}
+
+.stack {
+  display: grid;
+  gap: 16px;
+}
+
+.field-group {
+  display: grid;
+  gap: 10px;
+}
+
+.text-input {
+  min-height: 54px;
+  padding: 0 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: white;
+}
+
+.role-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.role-card,
+.primary,
+.secondary,
+.file-picker,
+.dropzone {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.role-card {
+  padding: 16px;
+  color: var(--ink);
+  background: white;
+  cursor: pointer;
+}
+
+.role-card.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.code-group {
+  display: grid;
+  gap: 10px;
+}
+
+.pin-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 72px));
+  gap: 12px;
+}
+
+.pin-input {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  text-align: center;
+  font-size: clamp(1.5rem, 5vw, 2rem);
+  background: white;
+}
+
+.pin-input:focus,
+.role-card:focus,
+.primary:focus,
+.secondary:focus {
+  outline: 2px solid rgba(13, 143, 98, 0.4);
+  outline-offset: 2px;
+}
+
+.primary,
+.secondary,
+.file-picker,
+.dropzone {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 56px;
+  padding: 0 20px;
+  background: white;
+}
+
+.primary {
+  color: white;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+  cursor: pointer;
+}
+
+.primary:disabled,
+.secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.secondary,
+.file-picker {
+  color: var(--ink);
+  background: white;
+  cursor: pointer;
+}
+
+.dropzone {
+  min-height: 110px;
+  padding: 18px;
+  border-style: dashed;
+  text-align: center;
+  color: var(--muted);
+}
+
+.dropzone.dragging {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.file-picker input {
+  display: none;
+}
+
+.status-card,
+.meta {
+  border-radius: 18px;
+  padding: 16px 18px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--line);
+}
+
+.meta {
+  white-space: pre-line;
+}
+
+.progress-block {
+  display: grid;
+  gap: 10px;
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.progress-track {
+  height: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(23, 33, 29, 0.1);
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, #1cb57e 0%, #127d59 100%);
+  transition: width 0.12s linear;
+}
+
+.hidden {
+  display: none;
+}
+
+.actions-row {
+  display: flex;
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .shell {
+    width: min(100% - 20px, 960px);
+    padding-top: 20px;
+  }
+
+  .panel {
+    padding: 20px;
+    border-radius: 24px;
+  }
+
+  .pin-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}

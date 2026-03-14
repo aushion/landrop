@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LAN DROP // P2P</title>
+    <style>
+        /* 核心极客样式 */
+        :root {
+            --bg-color: #0d1117; /* 深黑 */
+            --glow-color: #00ff41; /* 经典黑客绿 */
+            --text-color: #c9d1d9;
+            --font-family: 'Courier New', Courier, monospace; /* 等宽字体 */
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--font-family);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        /* 顶部状态栏，极简 */
+        #status-bar {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 12px;
+            color: #666;
+        }
+        #status-bar span::before { content: "> "; }
+
+        /* 标题 */
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 2rem;
+            text-shadow: 0 0 5px var(--glow-color);
+        }
+
+        /* 四位数字输入区域 */
+        .code-container {
+            display: flex;
+            gap: 15px;
+        }
+
+        .code-input {
+            width: 60px;
+            height: 80px;
+            background: transparent;
+            border: 2px solid #333;
+            color: var(--glow-color);
+            font-size: 48px;
+            text-align: center;
+            font-family: var(--font-family);
+            font-weight: bold;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        /* 聚焦时的微光效果 */
+        .code-input:focus {
+            border-color: var(--glow-color);
+            box-shadow: 0 0 15px rgba(0, 255, 65, 0.5);
+        }
+
+        /* 隐藏数字输入框的上下箭头 */
+        .code-input::-webkit-outer-spin-button,
+        .code-input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        /* 配对提示文字 */
+        #msg {
+            margin-top: 2rem;
+            font-size: 14px;
+            color: #888;
+            height: 1.2em;
+        }
+
+        /* 响应式适配 */
+        @media (max-width: 480px) {
+            .code-input { width: 40px; height: 60px; font-size: 32px; }
+            .code-container { gap: 10px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="status-bar">
+        <span>LAN_IP: 192.168.1.105</span> | <span>RTC_STATUS: IDLE</span>
+    </div>
+
+    <h1>INITIALIZE P2P_LINK</h1>
+
+    <div class="code-container" id="input-group">
+        <input type="number" class="code-input" maxlength="1" autofocus autocomplete="off">
+        <input type="number" class="code-input" maxlength="1" autocomplete="off">
+        <input type="number" class="code-input" maxlength="1" autocomplete="off">
+        <input type="number" class="code-input" maxlength="1" autocomplete="off">
+    </div>
+
+    <p id="msg">Enter identical 4-digit code on both devices.</p>
+
+    <script>
+        // 处理输入框自动跳格的极简JS
+        const inputs = document.querySelectorAll('.code-input');
+        
+        inputs.forEach((input, index) => {
+            input.addEventListener('input', (e) => {
+                if (e.target.value.length === 1 && index < inputs.length - 1) {
+                    inputs[index + 1].focus();
+                }
+                
+                // 检查是否输满4位，输满则触发配对逻辑
+                if (Array.from(inputs).every(i => i.value.length === 1)) {
+                    startPairing();
+                }
+            });
+
+            // 处理退格键
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Backspace' && e.target.value.length === 0 && index > 0) {
+                    inputs[index - 1].focus();
+                }
+            });
+        });
+
+        function startPairing() {
+            const code = Array.from(inputs).map(i => i.value).join('');
+            document.getElementById('msg').innerText = `Establishing link with code: ${code}...`;
+            document.getElementById('msg').style.color = 'var(--glow-color)';
+            // 这里调用 Socket.io 发送配对请求
+            console.log('Pairing code:', code);
+            
+            // 模拟配对成功，跳转界面 (实际开发中由 WebSocket 事件触发)
+            // setTimeout(showTransferInterface, 2000); 
+        }
+    </script>
+</body>
+</html>
