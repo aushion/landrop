@@ -15,15 +15,12 @@ const state = {
   selectedFiles: [],
   sending: false,
   controlWaiters: [],
+  pendingChunkMeta: null,
   incomingMeta: null,
-  incomingChunks: [],
-  receivedBytes: 0,
-  writableStream: null,
-  selectedFileHandle: null,
   connected: false,
   peerDeviceName: "",
   networkMode: "lan-only",
-  outgoingBatchId: "",
+  outgoingSession: null,
 };
 
 const joinForm = document.querySelector("#join-form");
@@ -132,6 +129,10 @@ function restoreDraft() {
   }
 }
 
+function createId() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
 function cleanupSocket() {
   if (state.ws) {
     state.ws.onclose = null;
@@ -145,6 +146,14 @@ function cleanupSocket() {
   }
   state.ws = null;
   state.wsPromise = null;
+}
+
+function markResumePending() {
+  if (!state.outgoingSession) return;
+  const hasPendingFiles = state.outgoingSession.files.some((file) => !file.completed);
+  if (hasPendingFiles) {
+    state.outgoingSession.resumePending = true;
+  }
 }
 
 function cleanupPeerConnection() {
@@ -175,16 +184,23 @@ function cleanupPeerConnection() {
 
   state.connected = false;
   state.sending = false;
+  state.pendingChunkMeta = null;
+  state.controlWaiters.forEach((waiter) => {
+    clearTimeout(waiter.timer);
+    if (waiter.reject) {
+      waiter.reject(new Error("连接已断开"));
+    }
+  });
   state.controlWaiters = [];
   sendButton.disabled = true;
 }
 
-function resetIncomingFileState() {
+function resetIncomingFileState(closeStream = false) {
+  if (closeStream && state.incomingMeta?.writableStream) {
+    state.incomingMeta.writableStream.close().catch(() => {});
+  }
   state.incomingMeta = null;
-  state.incomingChunks = [];
-  state.receivedBytes = 0;
-  state.writableStream = null;
-  state.selectedFileHandle = null;
+  state.pendingChunkMeta = null;
   saveButton.disabled = true;
 }
 
@@ -214,13 +230,75 @@ ${preview}${extra}`;
   }
 }
 
-function setFiles(files) {
-  state.selectedFiles = Array.from(files);
+function createOutgoingSession(files) {
+  return {
+    batchId: createId(),
+    currentFileIndex: 0,
+    resumePending: false,
+    files: Array.from(files).map((file) => ({
+      id: createId(),
+      file,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      chunkSize: CHUNK_SIZE,
+      totalChunks: Math.ceil(file.size / CHUNK_SIZE) || 1,
+      completed: false,
+    })),
+  };
+}
+
+function getFileIdentity(file) {
+  return [file.name, file.size, file.lastModified, file.type].join("::");
+}
+
+function updateSelectedFiles(files, mode = "append") {
+  if (state.sending) {
+    setStatus("传输进行中，暂时不能修改文件队列。", true);
+    return;
+  }
+
+  const nextFiles = Array.from(files);
+  if (mode === "replace") {
+    state.selectedFiles = nextFiles;
+  } else {
+    const merged = [...state.selectedFiles];
+    const known = new Set(merged.map(getFileIdentity));
+    for (const file of nextFiles) {
+      const identity = getFileIdentity(file);
+      if (!known.has(identity)) {
+        merged.push(file);
+        known.add(identity);
+      }
+    }
+    state.selectedFiles = merged;
+  }
+
+  state.outgoingSession = null;
   refreshFileMeta();
 }
 
-function createId() {
-  return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+function ensureOutgoingSession() {
+  if (!state.outgoingSession) {
+    state.outgoingSession = createOutgoingSession(state.selectedFiles);
+  }
+  return state.outgoingSession;
+}
+
+function getMissingChunkIndexes(meta) {
+  const missing = [];
+  for (let index = 0; index < meta.totalChunks; index += 1) {
+    if (!meta.receivedChunks.has(index)) {
+      missing.push(index);
+    }
+  }
+  return missing;
+}
+
+function advanceContiguousChunk(meta) {
+  while (meta.receivedChunks.has(meta.contiguousChunkIndex)) {
+    meta.contiguousChunkIndex += 1;
+  }
 }
 
 async function loadRtcConfig() {
@@ -262,6 +340,7 @@ async function ensureSocket() {
     });
 
     ws.addEventListener("close", () => {
+      markResumePending();
       cleanupPeerConnection();
       state.ws = null;
       state.wsPromise = null;
@@ -287,34 +366,18 @@ function sendControl(message) {
   state.dataChannel.send(JSON.stringify(message));
 }
 
-function waitForControl(type, predicate = () => true, timeoutMs = CONTROL_TIMEOUT_MS) {
-  return new Promise((resolve, reject) => {
-    const waiter = {
-      type,
-      predicate,
-      resolve,
-      reject,
-      timer: window.setTimeout(() => {
-        state.controlWaiters = state.controlWaiters.filter((item) => item !== waiter);
-        reject(new Error(`等待 ${type} 超时`));
-      }, timeoutMs),
-    };
-    state.controlWaiters.push(waiter);
-  });
-}
-
 function waitForAnyControl(matchers, timeoutMs = CONTROL_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const waiters = matchers.map((matcher) => {
       const waiter = {
         type: matcher.type,
         predicate: matcher.predicate || (() => true),
+        timer: null,
+        reject,
         resolve: (message) => {
           cleanup();
           resolve(message);
         },
-        reject,
-        timer: null,
       };
       waiter.timer = window.setTimeout(() => {
         cleanup();
@@ -324,9 +387,7 @@ function waitForAnyControl(matchers, timeoutMs = CONTROL_TIMEOUT_MS) {
     });
 
     function cleanup() {
-      for (const waiter of waiters) {
-        clearTimeout(waiter.timer);
-      }
+      waiters.forEach((waiter) => clearTimeout(waiter.timer));
       state.controlWaiters = state.controlWaiters.filter((item) => !waiters.includes(item));
     }
 
@@ -365,8 +426,13 @@ async function setupPeerConnection(initiator) {
       if (state.role === "sender" && state.selectedFiles.length > 0 && !state.sending) {
         sendButton.disabled = false;
       }
-      setStatus("连接成功，可以开始传输。");
+      if (state.incomingMeta && !state.incomingMeta.completed) {
+        setStatus(`连接恢复，等待继续接收 ${state.incomingMeta.name}。`);
+      } else {
+        setStatus("连接成功，可以开始传输。");
+      }
     } else if (["failed", "disconnected", "closed"].includes(next)) {
+      markResumePending();
       state.connected = false;
       state.sending = false;
       sendButton.disabled = true;
@@ -398,10 +464,26 @@ function bindDataChannel(channel) {
     if (state.role === "sender" && state.selectedFiles.length > 0 && !state.sending) {
       sendButton.disabled = false;
     }
+
+    if (state.outgoingSession?.resumePending) {
+      setStatus("连接恢复，正在继续传输。");
+      state.outgoingSession.resumePending = false;
+      sendFileQueue().catch((error) => {
+        setStatus(error.message || "继续传输失败。", true);
+      });
+      return;
+    }
+
+    if (state.incomingMeta && !state.incomingMeta.completed) {
+      setStatus(`连接恢复，等待继续接收 ${state.incomingMeta.name}。`);
+      return;
+    }
+
     setStatus("数据通道已建立。");
   };
 
   channel.onclose = () => {
+    markResumePending();
     state.connected = false;
     state.sending = false;
     sendButton.disabled = true;
@@ -449,8 +531,8 @@ async function handleServerMessage(message) {
       unlockJoin();
       setPeerText("");
       setStatus(message.message, true);
+      markResumePending();
       cleanupPeerConnection();
-      resetTransferProgress();
       return;
     default:
       return;
@@ -481,29 +563,82 @@ async function handleSignalMessage(payload) {
   }
 }
 
+function createIncomingMeta(message) {
+  return {
+    id: message.file.id,
+    batchId: message.batchId,
+    name: message.file.name,
+    size: message.file.size,
+    type: message.file.type,
+    index: message.index,
+    total: message.total,
+    chunkSize: message.file.chunkSize || CHUNK_SIZE,
+    totalChunks: message.file.totalChunks || Math.ceil(message.file.size / CHUNK_SIZE) || 1,
+    receivedChunks: new Set(),
+    contiguousChunkIndex: 0,
+    receivedBytes: 0,
+    chunks: [],
+    writableStream: null,
+    selectedFileHandle: null,
+    awaitingCompletion: false,
+    completed: false,
+    pendingSaveSelection: false,
+  };
+}
+
+function reuseIncomingMeta(message) {
+  return (
+    state.incomingMeta &&
+    state.incomingMeta.id === message.file.id &&
+    !state.incomingMeta.completed
+  );
+}
+
 async function handleDataMessage(message) {
   if (message.type === "file_offer") {
-    resetIncomingFileState();
-    state.incomingMeta = message.file;
+    const isResume = reuseIncomingMeta(message);
+    if (!isResume) {
+      resetIncomingFileState();
+      state.incomingMeta = createIncomingMeta(message);
+    }
+
+    const meta = state.incomingMeta;
+    meta.index = message.index;
+    meta.total = message.total;
+    meta.size = message.file.size;
+    meta.type = message.file.type;
+    meta.name = message.file.name;
+    meta.chunkSize = message.file.chunkSize || CHUNK_SIZE;
+    meta.totalChunks = message.file.totalChunks || meta.totalChunks;
 
     setProgress(
-      `等待接收 ${state.incomingMeta.name}`,
-      0,
-      state.incomingMeta.size,
-      `${message.index + 1}/${message.total} 个文件，大小 ${formatBytes(state.incomingMeta.size)}`,
+      `等待接收 ${meta.name}`,
+      meta.receivedBytes,
+      meta.size,
+      `${message.index + 1}/${message.total} 个文件，已收到 ${formatBytes(meta.receivedBytes)}`,
     );
-    setStatus(`对端准备发送 ${state.incomingMeta.name}`);
 
-    if ("showSaveFilePicker" in window) {
-      saveButton.disabled = false;
-      setStatus(`请点击按钮，为 ${state.incomingMeta.name} 选择保存位置。`);
+    if (isResume && (meta.writableStream || meta.receivedBytes > 0)) {
+      setStatus(`继续接收 ${meta.name}，从第 ${meta.contiguousChunkIndex + 1} 块恢复。`);
+      sendControl({
+        type: "file_ready",
+        fileId: meta.id,
+        nextChunkIndex: meta.contiguousChunkIndex,
+      });
       return;
     }
 
-    if (state.incomingMeta.size > LARGE_FILE_THRESHOLD) {
+    if ("showSaveFilePicker" in window) {
+      meta.pendingSaveSelection = true;
+      saveButton.disabled = false;
+      setStatus(`请点击按钮，为 ${meta.name} 选择保存位置。`);
+      return;
+    }
+
+    if (meta.size > LARGE_FILE_THRESHOLD) {
       sendControl({
         type: "transfer_error",
-        fileId: state.incomingMeta.id,
+        fileId: meta.id,
         message: "当前浏览器不支持流式保存，无法接收超大文件。",
       });
       setStatus("当前浏览器不支持流式保存，已拒绝超大文件。", true);
@@ -511,18 +646,26 @@ async function handleDataMessage(message) {
       return;
     }
 
-    sendControl({ type: "file_ready", fileId: state.incomingMeta.id });
+    sendControl({
+      type: "file_ready",
+      fileId: meta.id,
+      nextChunkIndex: meta.contiguousChunkIndex,
+    });
+    return;
+  }
+
+  if (message.type === "chunk_meta") {
+    state.pendingChunkMeta = message;
     return;
   }
 
   if (message.type === "file_complete") {
-    await finalizeIncomingFile(message);
+    await handleFileComplete(message);
     return;
   }
 
   if (message.type === "batch_complete") {
     setStatus("文件队列接收完成。");
-    saveButton.disabled = false;
     return;
   }
 
@@ -530,57 +673,99 @@ async function handleDataMessage(message) {
     setStatus(message.message || "传输失败。", true);
     state.sending = false;
     sendButton.disabled = !state.connected || state.selectedFiles.length === 0;
-    resetIncomingFileState();
+    return;
   }
+}
+
+async function writeIncomingChunk(meta, chunkIndex, buffer) {
+  const byteOffset = chunkIndex * meta.chunkSize;
+  if (meta.writableStream) {
+    await meta.writableStream.seek(byteOffset);
+    await meta.writableStream.write(buffer);
+    return;
+  }
+
+  meta.chunks[chunkIndex] = buffer;
 }
 
 async function handleBinaryChunk(buffer) {
-  if (!state.incomingMeta) return;
+  const meta = state.incomingMeta;
+  const chunkMeta = state.pendingChunkMeta;
+  state.pendingChunkMeta = null;
 
-  state.receivedBytes += buffer.byteLength;
+  if (!meta || !chunkMeta || chunkMeta.fileId !== meta.id) {
+    return;
+  }
 
-  if (state.writableStream) {
-    await state.writableStream.write(buffer);
-  } else {
-    state.incomingChunks.push(buffer);
+  const { chunkIndex } = chunkMeta;
+  if (!meta.receivedChunks.has(chunkIndex)) {
+    await writeIncomingChunk(meta, chunkIndex, buffer);
+    meta.receivedChunks.add(chunkIndex);
+    meta.receivedBytes += buffer.byteLength;
+    advanceContiguousChunk(meta);
   }
 
   setProgress(
-    `接收 ${state.incomingMeta.name}`,
-    state.receivedBytes,
-    state.incomingMeta.size,
-    `${formatBytes(state.receivedBytes)} / ${formatBytes(state.incomingMeta.size)}`,
+    `接收 ${meta.name}`,
+    meta.receivedBytes,
+    meta.size,
+    `${formatBytes(meta.receivedBytes)} / ${formatBytes(meta.size)}，已完成 ${meta.receivedChunks.size}/${meta.totalChunks} 块`,
   );
+
+  if (meta.awaitingCompletion && meta.receivedChunks.size === meta.totalChunks) {
+    await finalizeIncomingFile();
+  }
 }
 
-async function finalizeIncomingFile(message) {
-  if (!state.incomingMeta) return;
+async function handleFileComplete(message) {
+  const meta = state.incomingMeta;
+  if (!meta || meta.id !== message.fileId) return;
 
-  if (state.writableStream) {
-    await state.writableStream.close();
+  meta.awaitingCompletion = true;
+  const missingChunks = getMissingChunkIndexes(meta);
+  if (missingChunks.length > 0) {
+    setStatus(`${meta.name} 缺少 ${missingChunks.length} 个分片，正在请求补发。`, true);
+    sendControl({
+      type: "chunk_resend_request",
+      fileId: meta.id,
+      missingChunks,
+    });
+    return;
+  }
+
+  await finalizeIncomingFile();
+}
+
+async function finalizeIncomingFile() {
+  const meta = state.incomingMeta;
+  if (!meta || meta.completed) return;
+
+  if (meta.writableStream) {
+    await meta.writableStream.close();
   } else {
-    const blob = new Blob(state.incomingChunks, {
-      type: state.incomingMeta.type || "application/octet-stream",
+    const blob = new Blob(meta.chunks, {
+      type: meta.type || "application/octet-stream",
     });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = state.incomingMeta.name;
+    anchor.download = meta.name;
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
 
+  meta.completed = true;
   setProgress(
-    `已完成 ${state.incomingMeta.name}`,
-    state.incomingMeta.size,
-    state.incomingMeta.size,
-    `${(message.index || 0) + 1}/${message.total || 1} 个文件已完成`,
+    `已完成 ${meta.name}`,
+    meta.size,
+    meta.size,
+    `${meta.index + 1}/${meta.total} 个文件已完成`,
   );
-  setStatus(`${state.incomingMeta.name} 接收完成。`);
+  setStatus(`${meta.name} 接收完成。`);
 
   sendControl({
     type: "file_received",
-    fileId: state.incomingMeta.id,
+    fileId: meta.id,
   });
 
   resetIncomingFileState();
@@ -595,25 +780,74 @@ async function waitForBufferedAmountLow(channel) {
   });
 }
 
-async function streamFile(channel, file, index, totalFiles) {
-  let offset = 0;
+async function sendChunk(channel, fileEntry, chunkIndex, index, totalFiles) {
+  const start = chunkIndex * fileEntry.chunkSize;
+  const chunk = fileEntry.file.slice(start, start + fileEntry.chunkSize);
+  const buffer = await chunk.arrayBuffer();
 
-  while (offset < file.size) {
-    if (channel.bufferedAmount > BACKPRESSURE_THRESHOLD) {
-      await waitForBufferedAmountLow(channel);
+  if (channel.bufferedAmount > BACKPRESSURE_THRESHOLD) {
+    await waitForBufferedAmountLow(channel);
+  }
+
+  sendControl({
+    type: "chunk_meta",
+    fileId: fileEntry.id,
+    chunkIndex,
+    byteLength: buffer.byteLength,
+  });
+  channel.send(buffer);
+
+  const sentBytes = Math.min(fileEntry.size, start + buffer.byteLength);
+  setProgress(
+    `发送 ${fileEntry.name}`,
+    sentBytes,
+    fileEntry.size,
+    `${index + 1}/${totalFiles} 个文件，${formatBytes(sentBytes)} / ${formatBytes(fileEntry.size)}，第 ${chunkIndex + 1}/${fileEntry.totalChunks} 块`,
+  );
+}
+
+async function sendChunkRange(channel, fileEntry, startChunkIndex, index, totalFiles) {
+  for (let chunkIndex = startChunkIndex; chunkIndex < fileEntry.totalChunks; chunkIndex += 1) {
+    await sendChunk(channel, fileEntry, chunkIndex, index, totalFiles);
+  }
+}
+
+async function resendChunks(channel, fileEntry, missingChunks, index, totalFiles) {
+  for (const chunkIndex of missingChunks) {
+    await sendChunk(channel, fileEntry, chunkIndex, index, totalFiles);
+  }
+}
+
+async function waitForFileConfirmation(fileEntry, index, totalFiles) {
+  while (true) {
+    const message = await waitForAnyControl([
+      { type: "file_received", predicate: (payload) => payload.fileId === fileEntry.id },
+      { type: "chunk_resend_request", predicate: (payload) => payload.fileId === fileEntry.id },
+      { type: "transfer_error", predicate: (payload) => payload.fileId === fileEntry.id },
+    ]);
+
+    if (message.type === "file_received") {
+      return;
     }
 
-    const chunk = file.slice(offset, offset + CHUNK_SIZE);
-    const buffer = await chunk.arrayBuffer();
-    channel.send(buffer);
-    offset += buffer.byteLength;
+    if (message.type === "transfer_error") {
+      throw new Error(message.message || `${fileEntry.name} 接收失败`);
+    }
 
-    setProgress(
-      `发送 ${file.name}`,
-      offset,
-      file.size,
-      `${index + 1}/${totalFiles} 个文件，${formatBytes(offset)} / ${formatBytes(file.size)}`,
+    await resendChunks(
+      state.dataChannel,
+      fileEntry,
+      message.missingChunks || [],
+      index,
+      totalFiles,
     );
+    sendControl({
+      type: "file_complete",
+      batchId: state.outgoingSession.batchId,
+      fileId: fileEntry.id,
+      index,
+      total: totalFiles,
+    });
   }
 }
 
@@ -627,71 +861,70 @@ async function sendFileQueue() {
     return;
   }
 
+  const session = ensureOutgoingSession();
+  const totalFiles = session.files.length;
   state.sending = true;
   sendButton.disabled = true;
 
-  const channel = state.dataChannel;
-  const totalFiles = state.selectedFiles.length;
-  state.outgoingBatchId = createId();
-  let currentOutgoingFileId = "";
-
   try {
-    for (let index = 0; index < state.selectedFiles.length; index += 1) {
-      const file = state.selectedFiles[index];
-      const fileId = createId();
-      currentOutgoingFileId = fileId;
+    for (let index = session.currentFileIndex; index < totalFiles; index += 1) {
+      const fileEntry = session.files[index];
+      if (fileEntry.completed) continue;
 
       sendControl({
         type: "file_offer",
-        batchId: state.outgoingBatchId,
+        batchId: session.batchId,
         index,
         total: totalFiles,
         file: {
-          id: fileId,
-          name: file.name,
-          size: file.size,
-          type: file.type,
+          id: fileEntry.id,
+          name: fileEntry.name,
+          size: fileEntry.size,
+          type: fileEntry.type,
+          chunkSize: fileEntry.chunkSize,
+          totalChunks: fileEntry.totalChunks,
         },
       });
 
       const readyMessage = await waitForAnyControl([
-        { type: "file_ready", predicate: (message) => message.fileId === fileId },
-        { type: "transfer_error", predicate: (message) => message.fileId === fileId },
+        { type: "file_ready", predicate: (message) => message.fileId === fileEntry.id },
+        { type: "transfer_error", predicate: (message) => message.fileId === fileEntry.id },
       ]);
 
       if (readyMessage.type === "transfer_error") {
-        throw new Error(readyMessage.message || `${file.name} 无法开始传输`);
+        throw new Error(readyMessage.message || `${fileEntry.name} 无法开始传输`);
       }
 
-      await streamFile(channel, file, index, totalFiles);
+      const nextChunkIndex = Math.min(
+        fileEntry.totalChunks,
+        Number(readyMessage.nextChunkIndex || 0),
+      );
 
+      await sendChunkRange(state.dataChannel, fileEntry, nextChunkIndex, index, totalFiles);
       sendControl({
         type: "file_complete",
-        batchId: state.outgoingBatchId,
-        fileId,
+        batchId: session.batchId,
+        fileId: fileEntry.id,
         index,
         total: totalFiles,
       });
 
-      const receivedMessage = await waitForAnyControl([
-        { type: "file_received", predicate: (message) => message.fileId === fileId },
-        { type: "transfer_error", predicate: (message) => message.fileId === fileId },
-      ]);
-
-      if (receivedMessage.type === "transfer_error") {
-        throw new Error(receivedMessage.message || `${file.name} 接收失败`);
-      }
+      await waitForFileConfirmation(fileEntry, index, totalFiles);
+      fileEntry.completed = true;
+      session.currentFileIndex = index + 1;
     }
 
-    sendControl({ type: "batch_complete", batchId: state.outgoingBatchId, total: totalFiles });
+    sendControl({ type: "batch_complete", batchId: session.batchId, total: totalFiles });
+    state.outgoingSession = null;
     setStatus("文件队列发送完成。");
   } catch (error) {
+    session.resumePending = true;
     setStatus(error.message || "传输失败。", true);
     try {
       sendControl({
         type: "transfer_error",
-        batchId: state.outgoingBatchId,
-        fileId: currentOutgoingFileId,
+        batchId: session.batchId,
+        fileId: session.files[session.currentFileIndex]?.id || "",
         message: error.message || "传输失败。",
       });
     } catch (sendError) {
@@ -783,7 +1016,8 @@ rejoinButton.addEventListener("click", async () => {
 });
 
 fileInput.addEventListener("change", () => {
-  setFiles(fileInput.files);
+  updateSelectedFiles(fileInput.files, "append");
+  fileInput.value = "";
 });
 
 dropzone.addEventListener("dragover", (event) => {
@@ -799,7 +1033,7 @@ dropzone.addEventListener("drop", (event) => {
   event.preventDefault();
   dropzone.classList.remove("dragging");
   if (event.dataTransfer?.files?.length) {
-    setFiles(event.dataTransfer.files);
+    updateSelectedFiles(event.dataTransfer.files, "append");
   }
 });
 
@@ -808,7 +1042,8 @@ sendButton.addEventListener("click", async () => {
 });
 
 saveButton.addEventListener("click", async () => {
-  if (!state.incomingMeta) {
+  const meta = state.incomingMeta;
+  if (!meta) {
     setStatus("当前没有待保存的文件。", true);
     return;
   }
@@ -821,17 +1056,22 @@ saveButton.addEventListener("click", async () => {
 
   try {
     const handle = await window.showSaveFilePicker({
-      suggestedName: state.incomingMeta.name || "received-file",
+      suggestedName: meta.name || "received-file",
     });
-    state.selectedFileHandle = handle;
-    state.writableStream = await handle.createWritable();
+    meta.selectedFileHandle = handle;
+    meta.writableStream = await handle.createWritable();
+    meta.pendingSaveSelection = false;
     saveButton.disabled = true;
-    setStatus(`保存位置已确认：${state.incomingMeta.name}`);
-    sendControl({ type: "file_ready", fileId: state.incomingMeta.id });
+    setStatus(`保存位置已确认：${meta.name}`);
+    sendControl({
+      type: "file_ready",
+      fileId: meta.id,
+      nextChunkIndex: meta.contiguousChunkIndex,
+    });
   } catch (error) {
     sendControl({
       type: "transfer_error",
-      fileId: state.incomingMeta.id,
+      fileId: meta.id,
       message: "接收方取消了保存位置选择。",
     });
     setStatus("已取消当前文件接收。", true);
